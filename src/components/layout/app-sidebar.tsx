@@ -118,20 +118,43 @@ export default function AppSidebar() {
                         <IconChevronRight className='ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90' />
                       </SidebarMenuButton>
                     </CollapsibleTrigger>
+
                     <CollapsibleContent>
                       <SidebarMenuSub>
-                        {item.items?.map((subItem) => (
-                          <SidebarMenuSubItem key={subItem.title}>
-                            <SidebarMenuSubButton
-                              asChild
-                              isActive={pathname === subItem.url}
-                            >
-                              <Link href={subItem.url}>
-                                <span>{subItem.title}</span>
-                              </Link>
-                            </SidebarMenuSubButton>
-                          </SidebarMenuSubItem>
-                        ))}
+                        {(item.items ?? []).map((subItem) => {
+                          // ✅ sirf sidebar me disable karne ka guard:
+                          // use either `subItem.disabled` (global) ya `subItem.disableIn?.includes('sidebar')` (context-specific)
+                          const isDisabled =
+                            subItem.disabled ||
+                            subItem.disableIn?.includes('sidebar');
+
+                          return (
+                            <SidebarMenuSubItem key={subItem.title}>
+                              {isDisabled ? (
+                                // visible but NOT clickable
+                                <SidebarMenuSubButton asChild isActive={false}>
+                                  <span
+                                    aria-disabled='true'
+                                    className='block w-full cursor-not-allowed px-2 py-1.5 opacity-60 select-none'
+                                    onClick={(e) => e.preventDefault()}
+                                    onMouseDown={(e) => e.preventDefault()}
+                                  >
+                                    {subItem.title}
+                                  </span>
+                                </SidebarMenuSubButton>
+                              ) : (
+                                <SidebarMenuSubButton
+                                  asChild
+                                  isActive={pathname === subItem.url}
+                                >
+                                  <Link href={subItem.url}>
+                                    <span>{subItem.title}</span>
+                                  </Link>
+                                </SidebarMenuSubButton>
+                              )}
+                            </SidebarMenuSubItem>
+                          );
+                        })}
                       </SidebarMenuSub>
                     </CollapsibleContent>
                   </SidebarMenuItem>
@@ -154,6 +177,7 @@ export default function AppSidebar() {
           </SidebarMenu>
         </SidebarGroup>
       </SidebarContent>
+
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
@@ -193,6 +217,7 @@ export default function AppSidebar() {
                 <DropdownMenuSeparator />
 
                 <DropdownMenuGroup>
+                  {/* Footer dropdown me Profile clickable rahega */}
                   <DropdownMenuItem
                     onClick={() => router.push('/dashboard/profile')}
                   >
@@ -208,10 +233,11 @@ export default function AppSidebar() {
                     Notifications
                   </DropdownMenuItem> */}
                 </DropdownMenuGroup>
+
                 <DropdownMenuSeparator />
+
                 <DropdownMenuItem onClick={handleSignOut}>
                   <IconLogout className='mr-2 h-4 w-4' />
-                  {/* <SignOutButton redirectUrl='/auth/sign-in' /> */}
                   Sign Out
                 </DropdownMenuItem>
               </DropdownMenuContent>
@@ -219,6 +245,7 @@ export default function AppSidebar() {
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
+
       <SidebarRail />
     </Sidebar>
   );

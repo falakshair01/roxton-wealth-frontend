@@ -15,7 +15,7 @@ export function TextAreaInput({
   placeholder,
   required,
   disabled = false,
-  rows = 4
+  rows = 8
 }: TextAreaProps) {
   const {
     register,
@@ -35,7 +35,8 @@ export function TextAreaInput({
           'transition-colors duration-200 outline-none placeholder:text-gray-400',
           // 'hover:border-gray-300 hov er:shadow-sm',
           // 'focus:border-gray-300 focus:ring-0',
-          'dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 dark:focus:border-gray-600',
+          // 'dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 dark:focus:border-gray-600',
+          'dark:text-gray-100',
           errors[name] && 'border-red-500 focus:border-red-500'
         )}
         placeholder={placeholder}

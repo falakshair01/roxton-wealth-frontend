@@ -55,7 +55,9 @@ export const navItems: NavItem[] = [
         title: 'Profile',
         url: '/dashboard/profile',
         icon: 'userPen',
-        shortcut: ['m', 'm']
+        shortcut: ['m', 'm'],
+        // ⬇️ SIRF sidebar me disable hoga; baqi (cmdk/header) me chalega
+        disableIn: ['sidebar']
       }
       // {
       //   title: 'Login',

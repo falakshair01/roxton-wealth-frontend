@@ -17,11 +17,10 @@ export default async function Page({
   searchParams?: Promise<Search>;
 }) {
   const { id: clientId } = await params;
-  console.log('Client ID:', clientId);
+
   const clientData = MOCK_CLIENTS_DETAIL.find(
     (client) => client.id === clientId
   );
-  console.log('Client Data:', clientData);
 
   if (!clientData) {
     return (
@@ -32,9 +31,11 @@ export default async function Page({
       </PageContainer>
     );
   }
+
   return (
     <PageContainer scrollable={false}>
       <div className='flex flex-1 flex-col space-y-2'>
+        {/* ✅ Pass data as prop */}
         <UpdateClientContent data={clientData} />
       </div>
     </PageContainer>

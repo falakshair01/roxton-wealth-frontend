@@ -8,55 +8,20 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
 import { FORM_DATA, FormField } from '@/constants/form-data';
 import CourseProgressCard from '@/features/client/components/CourseProgressCard';
-import { zodFromFields } from '@/validation/segmentSchema'; // ✅ your util
+import { zodFromFields } from '@/validation/segmentSchema';
 import { ClientDetail } from '@/constants/mock-clients-detail';
+import toast from 'react-hot-toast';
+import {
+  cloneFieldsWithPrefix,
+  collectAllFieldsForSchema,
+  defaultsFromFields,
+  isFormField,
+  isSplitSection,
+  YES_NO_KEYS
+} from '@/lib/client-split-section';
 
-// ---------- keep your helpers ----------
-function flattenAllFields(data: any[]): FormField[] {
-  return data.flatMap(
-    (step: any) =>
-      (step.fields ??
-        step.sections?.flatMap((s: any) => s.fields) ??
-        []) as FormField[]
-  );
-}
-
-function defaultsFromFields(fields: FormField[]) {
-  const d: Record<string, any> = {};
-  for (const f of fields) {
-    if (d[f.name] !== undefined) continue;
-    switch (f.input_type) {
-      case 'input_checklist':
-        d[f.name] = Array.isArray(f.value) ? f.value : [];
-        break;
-      case 'file':
-        d[f.name] = null;
-        break;
-      default:
-        d[f.name] = typeof f.value === 'number' ? f.value : (f.value ?? '');
-    }
-  }
-  return d;
-}
-
+/* ================== data normalisation ================== */
 type AnyRec = Record<string, any>;
-
-const YES_NO_KEYS = new Set([
-  'valid_will',
-  'dependent_on_partner',
-  'politically_exposed_person',
-  'uk_sanction_entity',
-  'financial_dependents',
-  'summary_income',
-  'summary_properties',
-  'summary_protection',
-  'summary_other_liabilities',
-  'summary_previous_debt_consolidation',
-  'has_adverse_credit_history',
-  'loan_application_refused',
-  'pep_or_linked',
-  'joint_dependent'
-]);
 
 function toYesNo(v: any) {
   if (typeof v === 'number') return v > 0 ? 'yes' : 'no';
@@ -64,12 +29,10 @@ function toYesNo(v: any) {
     const s = v.trim().toLowerCase();
     if (['yes', 'y', 'true', '1'].includes(s)) return 'yes';
     if (['no', 'n', 'false', '0', ''].includes(s)) return 'no';
-    // non-empty free text (e.g. summary strings) -> yes
     return 'yes';
   }
   return 'no';
 }
-
 function isoDate(d: any) {
   if (!d) return '';
   const x = new Date(d);
@@ -79,10 +42,33 @@ function isoDate(d: any) {
   return `${x.getFullYear()}-${mm}-${dd}`;
 }
 
+const SPLIT_BASE_FIELD_NAMES: Set<string> = (() => {
+  const names = new Set<string>();
+  for (const step of FORM_DATA) {
+    const sections = step.sections ?? [];
+    for (const sec of sections) {
+      if (isSplitSection(step.id, sec.sub_title)) {
+        for (const f of sec.fields as FormField[]) names.add(f.name);
+      }
+    }
+  }
+  return names;
+})();
+
 export function normaliseClientDetailForForm(src: AnyRec): AnyRec {
   const out: AnyRec = { ...src };
 
-  // ---- dates to YYYY-MM-DD
+  const c1 =
+    out.client1 && typeof out.client1 === 'object' ? out.client1 : null;
+  const c2 =
+    out.client2 && typeof out.client2 === 'object' ? out.client2 : null;
+  if (c1) {
+    for (const [k, v] of Object.entries(c1)) out[`client1_${k}`] = v;
+  }
+  if (c2) {
+    for (const [k, v] of Object.entries(c2)) out[`client2_${k}`] = v;
+  }
+
   Object.keys(out).forEach((k) => {
     if (
       /_date$|date_of_birth|dependent_dob|employment_start_date|date_of_issue|expiry_date/i.test(
@@ -93,7 +79,6 @@ export function normaliseClientDetailForForm(src: AnyRec): AnyRec {
     }
   });
 
-  // ---- venue/client status
   if (typeof out.meeting_venue === 'string') {
     const s = out.meeting_venue.toLowerCase();
     out.meeting_venue = s.includes('client')
@@ -102,66 +87,132 @@ export function normaliseClientDetailForForm(src: AnyRec): AnyRec {
         ? 'video_conference'
         : 'face_to_face';
   }
-  if (typeof out.client_status === 'string') {
-    const s = out.client_status.toLowerCase();
-    out.client_status = s === 'active' ? 'current_client' : 'legacy_client';
-  }
 
-  // ---- contact methods/checklists
-  if (Array.isArray(out.contact_method)) {
-    out.contact_method = out.contact_method.map((v: string) => {
-      const s = v.toLowerCase();
-      if (s === 'email') return 'correspondence_email';
-      return s; // phone/post/sms/any already lowercase works
-    });
-  }
+  const mapPairs = (keys: string[], fn: (val: any) => any) => {
+    for (const key of keys) {
+      if (key in out && typeof out[key] === 'string') out[key] = fn(out[key]);
+    }
+  };
+  mapPairs(
+    ['client_status', 'client1_client_status', 'client2_client_status'],
+    (v: string) =>
+      v.toLowerCase() === 'active'
+        ? 'current_client'
+        : v.toLowerCase() === 'legacy_client'
+          ? 'legacy_client'
+          : v
+  );
+  mapPairs(
+    ['employment_type', 'client1_employment_type', 'client2_employment_type'],
+    (v: string) => v.toLowerCase()
+  );
 
-  // ---- radios with allow/dont_allow
-  out.correspondence_email = 'allow'; // you provided an address, so allow
-  out.servicing_emails =
-    out.servicing_emails?.toLowerCase() === 'yes' ? 'allow' : 'dont_allow';
-  out.post_advertising =
-    out.post_advertising?.toLowerCase() === 'yes' ? 'allow' : 'dont_allow';
+  // E) contact_method conversions (base + prefixed)
+  const normalizeContactMethod = (v: any) =>
+    Array.isArray(v)
+      ? v.map((x: string) =>
+          String(x).toLowerCase() === 'email'
+            ? 'correspondence_email'
+            : String(x).toLowerCase()
+        )
+      : v;
 
-  // ---- employment, id types already ok except casing
-  if (typeof out.employment_type === 'string')
-    out.employment_type = out.employment_type.toLowerCase();
+  [
+    'contact_method',
+    'client1_contact_method',
+    'client2_contact_method'
+  ].forEach((k) => {
+    if (k in out) out[k] = normalizeContactMethod(out[k]);
+  });
 
-  // ---- YES/NO radios
-  // for (const k of YES_NO_KEYS) if (k in out) out[k] = toYesNo(out[k]);
-  Array.from(YES_NO_KEYS).forEach((k) => {
+  const allowOrNot = (v: any) =>
+    String(v).toLowerCase() === 'yes'
+      ? 'allow'
+      : String(v).toLowerCase() === 'allow'
+        ? 'allow'
+        : 'dont_allow';
+  [
+    'correspondence_email',
+    'client1_correspondence_email',
+    'client2_correspondence_email'
+  ].forEach((k) => {
+    if (k in out) out[k] = allowOrNot(out[k]);
+  });
+  [
+    'servicing_emails',
+    'client1_servicing_emails',
+    'client2_servicing_emails'
+  ].forEach((k) => {
+    if (k in out) out[k] = allowOrNot(out[k]);
+  });
+  [
+    'post_advertising',
+    'client1_post_advertising',
+    'client2_post_advertising'
+  ].forEach((k) => {
+    if (k in out) out[k] = allowOrNot(out[k]);
+  });
+
+  // F) YES/NO fields – base + prefixed
+  const yesNoKeysAll = [
+    ...Array.from(YES_NO_KEYS),
+    ...Array.from(YES_NO_KEYS).map((k) => `client1_${k}`),
+    ...Array.from(YES_NO_KEYS).map((k) => `client2_${k}`)
+  ];
+  yesNoKeysAll.forEach((k) => {
     if (k in out) out[k] = toYesNo(out[k]);
   });
 
-  // ---- special cases already aligned
-  // type_of_id: driving_license (good)
-  // verification_method: face_to_face (good)
+  // G) *** THE IMPORTANT FALLBACK ***
+  // If data has UNPREFIXED base keys that belong to split sections, copy them into Client 1.
+  // Also, if we find "<name>_2" or "<name>2" -> map to Client 2.
+  for (const baseName of Array.from(SPLIT_BASE_FIELD_NAMES)) {
+    const c1Key = `client1_${baseName}`;
+    const c2Key = `client2_${baseName}`;
+
+    // If client1_ not present but base value exists -> copy to client1_
+    if (!(c1Key in out) && baseName in out) {
+      out[c1Key] = out[baseName];
+    }
+
+    // If client2_ not present, try common second-client patterns
+    if (!(c2Key in out)) {
+      const c2Candidates = [
+        `${baseName}_2`,
+        `${baseName}2`,
+        `second_${baseName}`
+      ];
+      for (const cand of c2Candidates) {
+        if (cand in out) {
+          out[c2Key] = out[cand];
+          break;
+        }
+      }
+      // If still missing and there is an explicit 'client2' nested (handled above), it would be set.
+      // Otherwise leave empty so user can fill Client 2 manually.
+    }
+  }
 
   return out;
 }
 
-function isFormField(
-  item: FormField | { sub_title: string; fields: FormField[] }
-): item is FormField {
-  return (item as FormField).input_type !== undefined;
-}
-
+/* ================== COMPONENT ================== */
 export default function UpdateClientContent({ data }: { data: ClientDetail }) {
-  const allFormFields = useMemo(() => flattenAllFields(FORM_DATA), []);
+  // Build schema from split-aware flatten
+  const allFormFields = useMemo(() => collectAllFieldsForSchema(FORM_DATA), []);
   const schema = useMemo(() => zodFromFields(allFormFields), [allFormFields]);
 
-  // base defaults from your form definition
+  // Defaults
   const baseDefaults = useMemo(
     () => defaultsFromFields(allFormFields),
     [allFormFields]
   );
 
-  // initialise once with base defaults
   const methods = useForm<z.infer<typeof schema>>({
     resolver: zodResolver(schema),
     mode: 'onChange',
     defaultValues: baseDefaults,
-    shouldUnregister: false // keep values when sections unmount
+    shouldUnregister: false
   });
 
   const {
@@ -173,9 +224,7 @@ export default function UpdateClientContent({ data }: { data: ClientDetail }) {
     formState: { errors }
   } = methods;
 
-  // 🔑 when the record changes, merge & reset
-  // const baseDefaults = useMemo(() => defaultsFromFields(allFormFields), [allFormFields]);
-
+  // Merge incoming data → normalize (now includes mapping to client1_/client2_)
   useEffect(() => {
     if (!data) return;
     const merged = { ...baseDefaults, ...data };
@@ -191,25 +240,70 @@ export default function UpdateClientContent({ data }: { data: ClientDetail }) {
   );
 
   const currentStep = FORM_DATA[step];
-  const allFieldsThisStep: FormField[] = (currentStep as any).sections[subStep]
-    .fields;
+  const section = currentStep.sections?.[subStep];
+  const sectionFields: FormField[] = (section?.fields ?? []) as FormField[];
 
-  const onSubmit = (data: z.infer<typeof schema>) => {
-    console.log('Final Submitted Data', data);
+  // is last?
+  const isLastStep = useMemo(() => {
+    const s = FORM_DATA[step];
+    const sections = s?.sections ?? [];
+    const hasSections = sections.length > 0;
+    const atLastSub = hasSections ? subStep === sections.length - 1 : true;
+    return step === FORM_DATA.length - 1 && atLastSub;
+  }, [step, subStep]);
+
+  const onSubmit = async (formData: z.infer<typeof schema>) => {
+    if (!isLastStep) return;
+    try {
+      console.log('Final Submitted Data', formData);
+      toast.success('Client successfully updated!');
+    } catch (e) {
+      console.error(e);
+      toast.error('Client update failed!');
+    }
   };
 
-  const currentFields = FORM_DATA[step];
+  // Enter -> Next (except last step / textarea / combobox)
+  const handleFormKeyDown = async (e: React.KeyboardEvent<HTMLFormElement>) => {
+    if (e.key !== 'Enter') return;
+    const tgt = e.target as HTMLElement;
+    const tag = tgt.tagName.toLowerCase();
+    const role = tgt.getAttribute('role');
+    const isTextArea = tag === 'textarea';
+    const isCombo = role === 'combobox';
+    if (!isLastStep && !isTextArea && !isCombo) {
+      e.preventDefault();
+      await handleNext();
+    }
+  };
+
+  // split vs normal for current section
+  const splitThisSection = isSplitSection(currentStep.id, section?.sub_title);
+  const client1Fields = useMemo(
+    () =>
+      splitThisSection ? cloneFieldsWithPrefix(sectionFields, 'client1_') : [],
+    [splitThisSection, sectionFields]
+  );
+  const client2Fields = useMemo(
+    () =>
+      splitThisSection ? cloneFieldsWithPrefix(sectionFields, 'client2_') : [],
+    [splitThisSection, sectionFields]
+  );
+  const normalFields = useMemo(
+    () => (splitThisSection ? [] : sectionFields),
+    [splitThisSection, sectionFields]
+  );
 
   const handleNext = async () => {
-    const fieldNames = allFieldsThisStep.map((f) => f.name); // Only current step's fields
+    const fieldNames = splitThisSection
+      ? [...client1Fields, ...client2Fields].map((f) => f.name)
+      : normalFields.map((f) => f.name);
+
     const ok = await trigger(fieldNames);
     if (!ok) return;
 
-    const stepValues = getValues(fieldNames);
-
     const curr = FORM_DATA[step];
 
-    // go to next sub-step if this step has sections
     if (Array.isArray(curr?.sections) && subStep < curr.sections.length - 1) {
       const nextSub = subStep + 1;
       setSubStep(nextSub);
@@ -217,7 +311,6 @@ export default function UpdateClientContent({ data }: { data: ClientDetail }) {
       return;
     }
 
-    // otherwise advance to next step
     if (step < FORM_DATA.length - 1) {
       const nextStep = step + 1;
       const next = FORM_DATA[nextStep];
@@ -232,28 +325,31 @@ export default function UpdateClientContent({ data }: { data: ClientDetail }) {
     }
   };
 
+  const hasSections = (s: any) =>
+    Array.isArray(s?.sections) && s.sections.length > 0;
+  const lastSubIndex = (s: any) => (hasSections(s) ? s.sections.length - 1 : 0);
+
   const handleBack = () => {
     const curr = FORM_DATA[step];
 
-    // 1) Go back within current step if there are sub-steps
-    if (Array.isArray(curr?.sections) && subStep > 0) {
+    if (hasSections(curr) && subStep > 0) {
       const prevSub = subStep - 1;
       setSubStep(prevSub);
-      setSubTitle(curr.sections[prevSub]?.sub_title ?? '');
+      setSubTitle(curr.sections?.[prevSub]?.sub_title ?? '');
       return;
     }
 
-    // 2) Otherwise go to previous step (if any)
-    if (step < FORM_DATA.length - 1) {
-      const nextStep = step + 1;
-      const next = FORM_DATA[nextStep];
-      setStep(nextStep);
-      setTitle(next?.title ?? '');
-      const hasSections =
-        Array.isArray(next?.sections) && next.sections.length > 0;
-      setSubStep(0);
+    if (step > 0) {
+      const prevStep = step - 1;
+      const prev = FORM_DATA[prevStep];
+
+      setStep(prevStep);
+      setTitle(prev?.title ?? '');
+
+      const prevLast = lastSubIndex(prev);
+      setSubStep(prevLast);
       setSubTitle(
-        hasSections && next.sections ? (next.sections[0]?.sub_title ?? '') : ''
+        hasSections(prev) ? (prev.sections?.[prevLast]?.sub_title ?? '') : ''
       );
     }
   };
@@ -264,7 +360,6 @@ export default function UpdateClientContent({ data }: { data: ClientDetail }) {
       <div
         className='h-[calc(100vh-var(--header-h))] w-[70%] min-w-[70%]'
         style={{
-          // set this to your actual header height
           // @ts-ignore
           '--header-h': '100px'
         }}
@@ -272,61 +367,152 @@ export default function UpdateClientContent({ data }: { data: ClientDetail }) {
         <FormProvider {...methods}>
           <form
             onSubmit={handleSubmit(onSubmit)}
+            onKeyDown={handleFormKeyDown}
             className='flex h-full flex-col'
           >
             <div className='flex h-full flex-col rounded-xl border p-6 shadow-sm backdrop-blur'>
               <div className='mb-6 flex items-center justify-between'>
-                <h2 className='text-2xl font-bold tracking-tight'>{`${title} ${subTitle ? ' / ' + subTitle : ''}`}</h2>
+                <h2 className='text-2xl font-bold tracking-tight'>
+                  {`${title} ${subTitle ? ' / ' + subTitle : ''}`}
+                </h2>
               </div>
-              {/* scrollable content fills remaining space */}
+
               <div className='min-h-0 flex-1 overflow-y-auto pr-2 pb-12'>
-                {/* <div className='grid gap-5 sm:grid-cols-2 lg:grid-cols-3 [@media(min-width:1440px)]:grid-cols-4'> */}
+                {/* Top-level fields (rare) — unchanged */}
                 <div className='grid grid-cols-1 gap-5 md:grid-cols-2'>
-                  {Array.isArray(currentFields.fields) &&
+                  {Array.isArray((currentStep as any).fields) &&
                     (
-                      currentFields.fields as (
+                      (currentStep as any).fields as (
                         | FormField
                         | { sub_title: string; fields: FormField[] }
                       )[]
                     )
                       .filter(isFormField)
-                      .map((field) => (
-                        <SmartInput
-                          key={field.name}
-                          field={{
-                            ...field,
-                            defaultValue: getValues(field.name as string),
-                            error: String(
-                              (errors as any)[field.name]?.message ?? ''
-                            ),
-                            onChange: (val) =>
-                              setValue(field.name as string, val, {
-                                shouldValidate: true
-                              })
-                          }}
-                        />
-                      ))}
-                  {currentFields.sections &&
-                    currentFields.sections[subStep].fields?.map(
-                      (field: FormField) => (
-                        <SmartInput
-                          key={field.name}
-                          field={{
-                            ...field,
-                            defaultValue: getValues(field.name as string),
-                            error: String(
-                              (errors as any)[field.name]?.message ?? ''
-                            ),
-                            onChange: (val) =>
-                              setValue(field.name as string, val, {
-                                shouldValidate: true
-                              })
-                          }}
-                        />
-                      )
-                    )}
+                      .map((field) => {
+                        const v = getValues(field.name as string);
+                        return (
+                          <div
+                            key={`${field.name}:${String(v)}`}
+                            className={
+                              field.input_type === 'input_textarea'
+                                ? 'col-span-2'
+                                : ''
+                            }
+                          >
+                            <SmartInput
+                              key={`${field.name}:${String(v)}`}
+                              field={{
+                                ...field,
+                                defaultValue: v,
+                                error: String(
+                                  (errors as any)[field.name]?.message ?? ''
+                                ),
+                                onChange: (val) =>
+                                  setValue(field.name as string, val, {
+                                    shouldValidate: true
+                                  })
+                              }}
+                            />
+                          </div>
+                        );
+                      })}
                 </div>
+
+                {/* Section fields — either normal OR split (Client 1 | Client 2) */}
+                {!splitThisSection && (
+                  <div className='grid grid-cols-1 gap-5 md:grid-cols-2'>
+                    {normalFields.map((field) => {
+                      const v = getValues(field.name as string);
+                      return (
+                        <div
+                          key={`${field.name}:${String(v)}`}
+                          className={
+                            field.input_type === 'input_textarea'
+                              ? 'col-span-2'
+                              : ''
+                          }
+                        >
+                          <SmartInput
+                            key={`${field.name}:${String(v)}`}
+                            field={{
+                              ...field,
+                              defaultValue: v,
+                              error: String(
+                                (errors as any)[field.name]?.message ?? ''
+                              ),
+                              onChange: (val) =>
+                                setValue(field.name as string, val, {
+                                  shouldValidate: true
+                                })
+                            }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {splitThisSection && (
+                  <div className='grid grid-cols-1 gap-6 md:grid-cols-2'>
+                    {/* Client 1 */}
+                    <div>
+                      <div className='mb-3 text-lg font-semibold'>Client 1</div>
+                      <div className='grid grid-cols-1 gap-5'>
+                        {client1Fields.map((field) => {
+                          const v = getValues(field.name as string);
+                          return (
+                            <div key={`${field.name}:${String(v)}`}>
+                              <SmartInput
+                                key={`${field.name}:${String(v)}`}
+                                field={{
+                                  ...field,
+                                  defaultValue: v,
+                                  error: String(
+                                    (errors as any)[field.name]?.message ?? ''
+                                  ),
+                                  onChange: (val) =>
+                                    setValue(field.name as string, val, {
+                                      shouldValidate: true
+                                    })
+                                }}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Client 2 */}
+                    <div>
+                      <div className='mb-3 text-lg font-semibold'>Client 2</div>
+                      <div className='grid grid-cols-1 gap-5'>
+                        {client2Fields.map((field) => {
+                          const v = getValues(field.name as string);
+                          return (
+                            <div key={`${field.name}:${String(v)}`}>
+                              <SmartInput
+                                key={`${field.name}:${String(v)}`}
+                                field={{
+                                  ...field,
+                                  defaultValue: v,
+                                  error: String(
+                                    (errors as any)[field.name]?.message ?? ''
+                                  ),
+                                  onChange: (val) =>
+                                    setValue(field.name as string, val, {
+                                      shouldValidate: true
+                                    })
+                                }}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
+
               <div className='absolute right-0 bottom-0 left-0 p-4'>
                 <div className='flex items-center justify-between'>
                   {step > 0 || subStep > 0 ? (
@@ -342,20 +528,24 @@ export default function UpdateClientContent({ data }: { data: ClientDetail }) {
                     <div />
                   )}
 
-                  {step < FORM_DATA.length - 1 ? (
-                    <Button
-                      type='button'
-                      onClick={handleNext}
-                      className='bg-primary mr-2 rounded-lg text-white'
-                    >
-                      Next
-                    </Button>
-                  ) : (
+                  {isLastStep ? (
                     <Button
                       type='submit'
                       className='bg-primary rounded-lg text-white'
                     >
                       Submit
+                    </Button>
+                  ) : (
+                    <Button
+                      type='button'
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleNext();
+                      }}
+                      className='bg-primary mr-2 rounded-lg text-white'
+                    >
+                      Next
                     </Button>
                   )}
                 </div>
@@ -369,13 +559,16 @@ export default function UpdateClientContent({ data }: { data: ClientDetail }) {
       <div
         className='h-[calc(100vh-var(--header-h))] w-[30%] min-w-[30%]'
         style={{
-          // set this to your actual header height
           // @ts-ignore
           '--header-h': '100px'
         }}
       >
         <div className='grid h-full grid-cols-1 gap-4'>
-          <CourseProgressCard step={step} subStep={subStep} />
+          <CourseProgressCard
+            step={step}
+            subStep={subStep}
+            data={getValues()}
+          />
         </div>
       </div>
     </div>

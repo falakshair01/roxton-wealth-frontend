@@ -45,9 +45,8 @@ import { usePathname, useRouter } from 'next/navigation';
 import * as React from 'react';
 import { Icons } from '../icons';
 import { OrgSwitcher } from '../org-switcher';
-import { useSelector } from 'react-redux';
-import { selectAuth, signOut } from '@/store/slices/auth';
-import { useAppDispatch } from '@/store/hooks';
+import { useAppDispatch, useAppSelector } from '@/store/hooks';
+import { selectCurrentUser, signOut } from '@/store/slices/auth';
 
 export const company = {
   name: 'Acme Inc',
@@ -67,7 +66,7 @@ export default function AppSidebar() {
 
   const pathname = usePathname();
   const { isOpen } = useMediaQuery();
-  const { user } = useSelector(selectAuth);
+  const user = useAppSelector(selectCurrentUser);
   console.log('UserNav authUser:', user);
 
   const handleSignOut = async () => {
@@ -75,15 +74,11 @@ export default function AppSidebar() {
     router.push('/auth/sign-in');
   };
 
-  const handleSwitchTenant = (_tenantId: string) => {
-    // Tenant switching functionality would be implemented here
-  };
+  const handleSwitchTenant = (_tenantId: string) => {};
 
   const activeTenant = tenants[0];
 
-  React.useEffect(() => {
-    // Side effects based on sidebar state changes
-  }, [isOpen]);
+  React.useEffect(() => {}, [isOpen]);
 
   return (
     <Sidebar collapsible='icon'>
@@ -136,7 +131,7 @@ export default function AppSidebar() {
                                   <span
                                     aria-disabled='true'
                                     className='block w-full cursor-not-allowed px-2 py-1.5 opacity-60 select-none'
-                                    onClick={(e) => e.preventDefault()}
+                                    onClick={() => dispatch(signOut())}
                                     onMouseDown={(e) => e.preventDefault()}
                                   >
                                     {subItem.title}

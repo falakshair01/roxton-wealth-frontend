@@ -18,8 +18,9 @@ const META_THEME_COLORS = {
 };
 
 export const metadata: Metadata = {
-  title: 'Next Shadcn',
-  description: 'Basic dashboard with Next.js and Shadcn'
+  title: 'Roxton Wealth',
+  description:
+    'Roxton Wealth – a mortgage & protection fact find platform built with Next.js and Shadcn UI. Collect client details, track progress, and export structured reports to PDF.'
 };
 
 export const viewport: Viewport = {

@@ -1,184 +1,164 @@
-// src/store/authSlice.ts
-import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
+import {
+  createSlice,
+  createAsyncThunk,
+  PayloadAction,
+  AsyncThunk
+} from '@reduxjs/toolkit';
+import { REHYDRATE } from 'redux-persist';
 
-/** ─── Local “DB” & session helpers (VERY basic; demo only) ─── */
-export type StoredUser = {
-  id: string;
+// ---- Types ----
+export type User = {
+  id?: string;
   email: string;
-  passwordHash: string;
-  imageUrl?: string;
-  fullName?: string | null;
-  createdAt: number;
+  firstName?: string;
+  lastName?: string;
+  bio?: string;
 };
-const USERS_KEY = 'app_users';
-const SESSION_KEY = 'userId';
-// super-light obfuscation (NOT secure)
-const hash = (s: string) =>
-  typeof window === 'undefined'
-    ? s
-    : window.btoa(unescape(encodeURIComponent(s)));
 
-const loadUsers = (): StoredUser[] => {
-  if (typeof window === 'undefined') return [];
-  try {
-    return JSON.parse(localStorage.getItem(USERS_KEY) || '[]') as StoredUser[];
-  } catch {
-    return [];
-  }
-};
-const saveUsers = (users: StoredUser[]) =>
-  localStorage.setItem(USERS_KEY, JSON.stringify(users));
-const setSession = (id: string) => localStorage.setItem(SESSION_KEY, id);
-const clearSession = () => localStorage.removeItem(SESSION_KEY);
-const getSession = (): string | null =>
-  typeof window === 'undefined' ? null : localStorage.getItem(SESSION_KEY);
-
-/** ─── State ─── */
 type AuthState = {
-  userId: string | null;
-  user: StoredUser | null;
+  user: User | null;
+  token: string | null;
   status: 'idle' | 'loading' | 'succeeded' | 'failed';
-  error?: string;
-  isLoaded: boolean; // hydrated from localStorage
+  error: string | null;
+  loaded: boolean;
 };
 
-const initialState: AuthState = {
-  userId: null,
-  user: null,
-  status: 'idle',
-  error: undefined,
-  isLoaded: false
-};
-
-/** ─── Thunks ─── */
-export const hydrateAuth = createAsyncThunk('auth/hydrate', async () => {
-  const id = getSession();
-  if (!id)
-    return { userId: null as string | null, user: null as StoredUser | null };
-  const users = loadUsers();
-  return { userId: id, user: users.find((u) => u.id === id) || null };
-});
-
-export const signUp = createAsyncThunk<
-  { userId: string; user: StoredUser },
-  { email: string; password: string },
-  { rejectValue: string }
->('auth/signUp', async ({ email, password }, { rejectWithValue }) => {
-  const users = loadUsers();
-  if (users.some((u) => u.email.toLowerCase() === email.toLowerCase())) {
-    return rejectWithValue('Email already registered');
-  }
-  const user: StoredUser = {
-    id: crypto.randomUUID(),
-    email,
-    passwordHash: hash(password),
-    createdAt: Date.now()
+// Define the AppState type for selectors
+type AppState = {
+  auth: AuthState;
+} & {
+  _persist?: {
+    version: number;
+    rehydrated: boolean;
   };
-  saveUsers([...users, user]);
-  setSession(user.id);
-  return { userId: user.id, user };
+};
+
+// ---- Initial State ----
+const initialState: AuthState = {
+  user: null,
+  token: null,
+  status: 'idle',
+  error: null,
+  loaded: false
+};
+
+// ---- Thunks ----
+export const signUp = createAsyncThunk<
+  { user: User; token: string },
+  {
+    email: string;
+    password: string;
+    firstName: string;
+    lastName: string;
+    bio?: string;
+  },
+  { rejectValue: string }
+>('auth/signUp', async (payload, { rejectWithValue }) => {
+  try {
+    const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4001';
+    const res = await fetch(`${base}/api/v1/users/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok) return rejectWithValue(data?.message || 'Registration failed');
+    return data;
+  } catch (err: any) {
+    return rejectWithValue(err?.message || 'Network error');
+  }
 });
 
 export const signIn = createAsyncThunk<
-  { userId: string; user: StoredUser },
+  { user: User; access_token: string },
   { email: string; password: string },
   { rejectValue: string }
->('auth/signIn', async ({ email, password }, { rejectWithValue }) => {
-  console.log('Attempting sign-in with:', { email, password });
-  const users = loadUsers();
-  const user = users.find((u) => u.email.toLowerCase() === email.toLowerCase());
-  if (!user || user.passwordHash !== hash(password)) {
-    return rejectWithValue('Invalid email or password');
+>('auth/signIn', async (payload, { rejectWithValue }) => {
+  try {
+    const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4001';
+    const res = await fetch(`${base}/api/v1/users/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok) return rejectWithValue(data?.message || 'Login failed');
+    return data;
+  } catch (err: any) {
+    return rejectWithValue(err?.message || 'Network error');
   }
-  console.log('User found:', user);
-  setSession(user.id);
-  return { userId: user.id, user };
 });
 
-export const signOut = createAsyncThunk('auth/signOut', async () => {
-  clearSession();
-});
-
-/** ─── Slice ─── */
+// ---- Slice ----
 const authSlice = createSlice({
   name: 'auth',
   initialState,
   reducers: {
-    // optional manual set if needed
-    setAuth(
-      state,
-      action: PayloadAction<{ userId: string | null; user: StoredUser | null }>
-    ) {
-      state.userId = action.payload.userId;
-      state.user = action.payload.user;
+    logout: (state) => {
+      state.user = null;
+      state.token = null;
+      state.status = 'idle';
+      state.error = null;
     }
   },
   extraReducers: (builder) => {
+    // Sign Up
     builder
-      // hydrate
-      .addCase(hydrateAuth.pending, (s) => {
-        s.status = 'loading';
-        s.error = undefined;
+      .addCase(signUp.pending, (state) => {
+        state.status = 'loading';
+        state.error = null;
       })
-      .addCase(hydrateAuth.fulfilled, (s, a) => {
-        s.status = 'succeeded';
-        s.isLoaded = true;
-        s.userId = a.payload.userId;
-        s.user = a.payload.user;
+      .addCase(signUp.fulfilled, (state, action) => {
+        console.log('SignUp fulfilled with payload:', action.payload);
+        state.status = 'succeeded';
+        state.user = action.payload.user;
+        state.token = action.payload.token;
+        state.error = null;
       })
-      .addCase(hydrateAuth.rejected, (s) => {
-        s.status = 'failed';
-        s.isLoaded = true;
-      })
-
-      // signup
-      .addCase(signUp.pending, (s) => {
-        s.status = 'loading';
-        s.error = undefined;
-      })
-      .addCase(signUp.fulfilled, (s, a) => {
-        s.status = 'succeeded';
-        s.userId = a.payload.userId;
-        s.user = a.payload.user;
-      })
-      .addCase(signUp.rejected, (s, a) => {
-        s.status = 'failed';
-        s.error = a.payload || 'Registration failed';
+      .addCase(signUp.rejected, (state, action) => {
+        state.status = 'failed';
+        state.error = action.payload || 'Sign up failed';
       })
 
-      // signin
-      .addCase(signIn.pending, (s) => {
-        s.status = 'loading';
-        s.error = undefined;
+      // Sign In
+      .addCase(signIn.pending, (state) => {
+        state.status = 'loading';
+        state.error = null;
       })
-      .addCase(signIn.fulfilled, (s, a) => {
-        s.status = 'succeeded';
-        s.userId = a.payload.userId;
-        s.user = a.payload.user;
+      .addCase(signIn.fulfilled, (state, action) => {
+        console.log('SignIn fulfilled with payload:', action.payload);
+        state.status = 'succeeded';
+        state.user = action.payload.user;
+        state.token = action.payload.access_token;
+        state.error = null;
+        state.loaded = true;
       })
-      .addCase(signIn.rejected, (s, a) => {
-        s.status = 'failed';
-        s.error = a.payload || 'Login failed';
+      .addCase(signIn.rejected, (state, action) => {
+        state.status = 'failed';
+        state.error = action.payload || 'Login failed';
+        state.loaded = true;
       })
 
-      // signout
-      .addCase(signOut.fulfilled, (s) => {
-        s.userId = null;
-        s.user = null;
-        s.status = 'idle';
+      // Handle rehydration
+      .addCase(REHYDRATE as any, (state) => {
+        state.loaded = true;
       });
   }
 });
 
-export const { setAuth } = authSlice.actions;
-export default authSlice.reducer;
+// Export actions
+export const { logout } = authSlice.actions;
 
-/** ─── Selectors ─── */
-export const selectAuth = (state: { auth: AuthState }) => state.auth;
-export const selectIsSignedIn = (state: { auth: AuthState }) =>
-  !!state.auth.userId;
-export const selectAuthLoaded = (state: { auth: AuthState }) =>
-  state.auth.isLoaded;
-export const selectAuthStatus = (state: { auth: AuthState }) =>
-  state.auth.status;
-export const selectAuthError = (state: { auth: AuthState }) => state.auth.error;
+// Selectors
+export const selectAuthStatus = (state: AppState) => state.auth.status;
+export const selectAuthError = (state: AppState) => state.auth.error;
+export const selectCurrentUser = (state: AppState) => state.auth.user;
+export const selectToken = (state: AppState) => state.auth.token;
+export const selectIsSignedIn = (state: AppState) =>
+  Boolean(state.auth.token || state.auth.user);
+export const selectAuthLoaded = (state: AppState) => state.auth.loaded;
+export const selectAuth = (state: AppState) => state.auth;
+
+export const signOut = logout;
+
+export default authSlice.reducer;

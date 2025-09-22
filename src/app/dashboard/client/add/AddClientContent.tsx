@@ -1,12 +1,12 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { SmartInput } from '@/features/client/components/SmartInput';
 import { FormProvider, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
-import { FORM_DATA, FormField, FormData } from '@/constants/form-data';
+import { FORM_DATA, FormField } from '@/constants/form-data';
 import CourseProgressCard from '@/features/client/components/CourseProgressCard';
 import { zodFromFields } from '@/validation/segmentSchema';
 import toast from 'react-hot-toast';
@@ -14,9 +14,9 @@ import {
   cloneFieldsWithPrefix,
   collectAllFieldsForSchema,
   defaultsFromFields,
-  isFormField,
   isSplitSection
 } from '@/lib/client-split-section';
+import { TabButton } from '@/features/client/components/TabButton';
 
 export default function AddClientContent() {
   const allSchemaFields = useMemo(
@@ -38,6 +38,20 @@ export default function AddClientContent() {
   const [title, setTitle] = useState(FORM_DATA[0]?.title ?? '');
   const [subTitle, setSubTitle] = useState(
     FORM_DATA[0].sections?.[0]?.sub_title ?? ''
+  );
+
+  // ✅ loading state + timerRef + cleanup
+  const [loading, setLoading] = useState(false);
+  const timerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  // ✅ active client toggle
+  const [activeClient, setActiveClient] = useState<'client1' | 'client2'>(
+    'client1'
   );
 
   const methods = useForm<z.infer<typeof schema>>({
@@ -94,39 +108,58 @@ export default function AddClientContent() {
   const lastSubIndex = (s: any) => (hasSections(s) ? s.sections.length - 1 : 0);
 
   const handleNext = async () => {
+    if (loading) return;
+
     const fieldNames = splitThisSection
-      ? [...client1Fields, ...client2Fields].map((f) => f.name)
+      ? (activeClient === 'client1' ? client1Fields : client2Fields).map(
+          (f) => f.name
+        )
       : normalFields.map((f) => f.name);
 
     const ok = await trigger(fieldNames);
     if (!ok) return;
 
     const stepValues = getValues(fieldNames);
-    console.log('Current Step Values:', stepValues, 'fieldNames:', fieldNames);
+    console.groupCollapsed(
+      `[NEXT] Step ${step} • Sub ${subStep} — ${title}${
+        subTitle ? ' / ' + subTitle : ''
+      } • Active: ${splitThisSection ? activeClient : 'normal'}`
+    );
+    console.table(stepValues);
+    console.log('fieldNames:', fieldNames);
+    console.groupEnd();
 
-    const curr = FORM_DATA[step];
+    setLoading(true);
+    timerRef.current = window.setTimeout(() => {
+      setLoading(false);
 
-    if (Array.isArray(curr?.sections) && subStep < curr.sections.length - 1) {
-      const nextSub = subStep + 1;
-      setSubStep(nextSub);
-      setSubTitle(curr.sections[nextSub]?.sub_title ?? '');
-      return;
-    }
+      const curr = FORM_DATA[step];
 
-    if (step < FORM_DATA.length - 1) {
-      const nextStep = step + 1;
-      const next = FORM_DATA[nextStep];
-      setStep(nextStep);
-      setTitle(next?.title ?? '');
-      const hasSec = Array.isArray(next?.sections) && next.sections.length > 0;
-      setSubStep(0);
-      setSubTitle(
-        hasSec && next.sections ? (next.sections[0]?.sub_title ?? '') : ''
-      );
-    }
+      if (Array.isArray(curr?.sections) && subStep < curr.sections.length - 1) {
+        const nextSub = subStep + 1;
+        setSubStep(nextSub);
+        setSubTitle(curr.sections[nextSub]?.sub_title ?? '');
+        return;
+      }
+
+      if (step < FORM_DATA.length - 1) {
+        const nextStep = step + 1;
+        const next = FORM_DATA[nextStep];
+        setStep(nextStep);
+        setTitle(next?.title ?? '');
+        const hasSec =
+          Array.isArray(next?.sections) && next.sections.length > 0;
+        setSubStep(0);
+        setSubTitle(
+          hasSec && next.sections ? (next.sections[0]?.sub_title ?? '') : ''
+        );
+      }
+    }, 2000);
   };
 
   const handleBack = () => {
+    if (loading) return;
+
     const curr = FORM_DATA[step];
 
     if (hasSections(curr) && subStep > 0) {
@@ -161,8 +194,10 @@ export default function AddClientContent() {
           <form
             onSubmit={handleSubmit(onSubmit)}
             className='flex h-full flex-col'
+            aria-busy={loading}
           >
-            <div className='flex h-full flex-col rounded-xl border p-6 shadow-sm backdrop-blur'>
+            {/* ⬇️ Sidebar-like typography applied for labels + inputs */}
+            <div className='flex h-full flex-col rounded-xl border p-6 font-sans text-sm shadow-sm backdrop-blur [&_input]:font-sans [&_input]:text-sm [&_label]:font-sans [&_label]:text-sm [&_select]:font-sans [&_select]:text-sm [&_textarea]:font-sans [&_textarea]:text-sm'>
               <div className='mb-6 flex items-center justify-between'>
                 <h2 className='text-2xl font-bold tracking-tight'>
                   {`${title} ${subTitle ? ' / ' + subTitle : ''}`}
@@ -177,7 +212,7 @@ export default function AddClientContent() {
                         key={field.name}
                         className={
                           field.input_type === 'input_textarea'
-                            ? 'col-span-2'
+                            ? 'md:col-span-2'
                             : ''
                         }
                       >
@@ -201,57 +236,32 @@ export default function AddClientContent() {
                 )}
 
                 {splitThisSection && (
-                  <div className='grid grid-cols-1 gap-6 md:grid-cols-2'>
-                    {/* Client 1 */}
-                    <div>
-                      <div className='mb-3 text-lg font-semibold'>Client 1</div>
-                      <div className='grid grid-cols-1 gap-5'>
-                        {client1Fields.map((field) => (
-                          <div
-                            key={field.name}
-                            className={
-                              field.input_type === 'input_textarea'
-                                ? 'col-span-1'
-                                : ''
-                            }
-                          >
-                            <SmartInput
-                              key={field.name}
-                              field={{
-                                ...field,
-                                defaultValue: getValues(field.name as string),
-                                error: String(
-                                  (errors as any)[field.name]?.message ?? ''
-                                ),
-                                onChange: (val) =>
-                                  setValue(field.name as string, val, {
-                                    shouldValidate: true
-                                  })
-                              }}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
+                  <div className='mt-2'>
+                    <TabButton
+                      loading={loading}
+                      onClick={(tab) =>
+                        setActiveClient(tab as 'client1' | 'client2')
+                      }
+                      activeClient={activeClient}
+                    />
 
-                    {/* Client 2 */}
-                    <div>
-                      <div className='mb-3 text-lg font-semibold'>Client 2</div>
-                      <div className='grid grid-cols-1 gap-5'>
-                        {client2Fields.map((field) => (
-                          <div
-                            key={field.name}
-                            className={
-                              field.input_type === 'input_textarea'
-                                ? 'col-span-1'
-                                : ''
-                            }
-                          >
+                    <div className='mt-5 grid grid-cols-1 gap-5 md:grid-cols-2'>
+                      {(activeClient === 'client1'
+                        ? client1Fields
+                        : client2Fields
+                      ).map((field) => {
+                        const v = getValues(field.name as string);
+                        const span =
+                          field.input_type === 'input_textarea'
+                            ? 'md:col-span-2'
+                            : '';
+                        return (
+                          <div key={field.name} className={span}>
                             <SmartInput
-                              key={field.name}
+                              key={`${field.name}:${String(v)}`}
                               field={{
                                 ...field,
-                                defaultValue: getValues(field.name as string),
+                                defaultValue: v,
                                 error: String(
                                   (errors as any)[field.name]?.message ?? ''
                                 ),
@@ -262,8 +272,8 @@ export default function AddClientContent() {
                               }}
                             />
                           </div>
-                        ))}
-                      </div>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -276,7 +286,8 @@ export default function AddClientContent() {
                         type='button'
                         variant='secondary'
                         onClick={handleBack}
-                        className='!bg-gray-2 00 rounded-lg text-gray-800'
+                        className='rounded-lg !bg-gray-200 text-gray-800'
+                        disabled={loading}
                       >
                         Back
                       </Button>
@@ -291,15 +302,17 @@ export default function AddClientContent() {
                         type='button'
                         onClick={handleNext}
                         className='bg-primary mr-2 rounded-lg text-white'
+                        disabled={loading}
                       >
-                        Next
+                        {loading ? 'Loading…' : 'Next'}
                       </Button>
                     ) : (
                       <Button
                         type='submit'
                         className='bg-primary rounded-lg text-white'
+                        disabled={loading}
                       >
-                        Submit
+                        {loading ? 'Submitting…' : 'Submit'}
                       </Button>
                     )}
                   </div>
